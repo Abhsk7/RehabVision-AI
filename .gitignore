@@ -1,0 +1,15 @@
+# Virtual Environments (DO NOT PUSH TO GITHUB)
+.venv/
+venv/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# macOS System Files
+.DS_Store
+
+# Temporary files
+*.log

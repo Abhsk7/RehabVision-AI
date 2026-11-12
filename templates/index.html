@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RehabVision AI - Universal Rehabilitation Monitor</title>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --card-bg: #1e293b;
+            --accent-cyan: #06b6d4;
+            --accent-green: #10b981;
+            --accent-orange: #f59e0b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-color: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background-color: rgba(30, 41, 59, 0.8);
+            backdrop-filter: blur(8px);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo-group {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-badge {
+            background: linear-gradient(135deg, var(--accent-cyan), #3b82f6);
+            color: white;
+            font-weight: 800;
+            padding: 0.4rem 0.75rem;
+            border-radius: 8px;
+            font-size: 1.1rem;
+        }
+
+        .logo-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: rgba(16, 185, 129, 0.1);
+            color: var(--accent-green);
+            padding: 0.4rem 0.9rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--accent-green);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); opacity: 0.8; }
+            50% { transform: scale(1.3); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.8; }
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            gap: 1.5rem;
+            padding: 1.5rem 2rem;
+            flex: 1;
+        }
+
+        @media (max-width: 900px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .video-panel {
+            background-color: var(--card-bg);
+            border-radius: 16px;
+            border: 1px solid var(--border-color);
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+        }
+
+        .video-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 720px;
+            border-radius: 12px;
+            overflow: hidden;
+            background-color: #0b1120;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .video-feed {
+            width: 100%;
+            height: auto;
+            max-height: 540px;
+            object-fit: contain;
+            border-radius: 8px;
+        }
+
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            padding: 1.25rem;
+        }
+
+        .card-title {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.75rem;
+            font-weight: 700;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.75rem;
+        }
+
+        .stat-box {
+            background-color: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 0.9rem;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.3rem;
+        }
+
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 800;
+            color: var(--text-main);
+        }
+
+        .highlight-green { color: var(--accent-green); }
+        .highlight-cyan { color: var(--accent-cyan); }
+        .highlight-orange { color: var(--accent-orange); }
+
+        .posture-display {
+            background-color: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 1rem;
+            margin-top: 0.75rem;
+            text-align: center;
+        }
+
+        .posture-text {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+        }
+
+        .controls-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+
+        .btn {
+            background-color: #334155;
+            color: white;
+            border: none;
+            padding: 0.8rem 1rem;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            text-decoration: none;
+        }
+
+        .btn:hover {
+            background-color: #475569;
+            transform: translateY(-1px);
+        }
+
+        .btn-active {
+            background: linear-gradient(135deg, var(--accent-cyan), #3b82f6);
+            color: white;
+        }
+
+        .btn-reset {
+            background-color: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .btn-reset:hover {
+            background-color: #ef4444;
+            color: white;
+        }
+
+        .btn-pdf {
+            background: linear-gradient(135deg, var(--accent-green), #059669);
+            color: white;
+            margin-top: 0.4rem;
+        }
+
+        .btn-pdf:hover {
+            background: linear-gradient(135deg, #059669, #047857);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
+        }
+
+        footer {
+            text-align: center;
+            padding: 1rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            border-top: 1px solid var(--border-color);
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo-group">
+            <div class="logo-badge">RV</div>
+            <div class="logo-title">RehabVision AI</div>
+        </div>
+        <div class="status-badge">
+            <div class="status-dot"></div>
+            <span>Hardware M5 AI Engine Online</span>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Live Instant Camera Feed -->
+        <div class="video-panel">
+            <div class="video-wrapper">
+                <img src="/video_feed" class="video-feed" alt="RehabVision AI Camera Stream">
+            </div>
+        </div>
+
+        <!-- Telemetry & Controls Sidebar -->
+        <div class="sidebar">
+            <div class="card">
+                <div class="card-title">Session Telemetry</div>
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">REPETITIONS</div>
+                        <div class="stat-value highlight-green" id="stat-reps">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">CURRENT ANGLE</div>
+                        <div class="stat-value highlight-cyan" id="stat-angle">0°</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">PHASE</div>
+                        <div class="stat-value" id="stat-stage" style="font-size: 1.1rem; padding-top: 0.4rem;">EXTENDED</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">BEST ROM</div>
+                        <div class="stat-value highlight-orange" id="stat-rom">180°</div>
+                    </div>
+                </div>
+
+                <div class="posture-display">
+                    <div class="stat-label">CLINICAL POSTURE ASSESSMENT</div>
+                    <div class="posture-text" id="stat-posture">Stand in front of camera</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Exercise Controls & Export</div>
+                <div class="controls-group">
+                    <button class="btn btn-active" id="btn-arm" onclick="setMode('ARM')">
+                        💪 Arm Mode (Bicep Curl)
+                    </button>
+                    <button class="btn" id="btn-knee" onclick="setMode('KNEE')">
+                        🦵 Knee Mode (Extension / Squat)
+                    </button>
+                    <button class="btn btn-reset" onclick="resetSession()">
+                        🔄 Reset Session Stats
+                    </button>
+                    <a href="/download_report" class="btn btn-pdf" target="_blank">
+                        📄 Export Clinical PDF Report
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        RehabVision AI — Universal Clinical Rehabilitation Monitor
+    </footer>
+
+    <script>
+        function setMode(mode) {
+            fetch(`/api/set_mode/${mode}`)
+                .then(res => res.json())
+                .then(data => {
+                    const btnArm = document.getElementById('btn-arm');
+                    const btnKnee = document.getElementById('btn-knee');
+                    if (mode === 'ARM') {
+                        btnArm.classList.add('btn-active');
+                        btnKnee.classList.remove('btn-active');
+                    } else {
+                        btnKnee.classList.add('btn-active');
+                        btnArm.classList.remove('btn-active');
+                    }
+                });
+        }
+
+        function resetSession() {
+            fetch('/api/reset')
+                .then(res => res.json())
+                .then(data => console.log('Session reset'));
+        }
+
+        // Live real-time stats update every 150ms
+        setInterval(() => {
+            fetch('/api/stats')
+                .then(res => res.json())
+                .then(stats => {
+                    document.getElementById('stat-reps').innerText = stats.reps;
+                    document.getElementById('stat-angle').innerText = stats.angle + '°';
+                    document.getElementById('stat-stage').innerText = stats.stage;
+                    document.getElementById('stat-rom').innerText = stats.best_rom + '°';
+                    document.getElementById('stat-posture').innerText = stats.posture;
+                })
+                .catch(err => {});
+        }, 150);
+    </script>
+</body>
+</html>
