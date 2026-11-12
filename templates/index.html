@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RehabVision AI - Universal Rehabilitation Monitor</title>
+    <!-- Google MediaPipe Vision Library -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.js" crossorigin="anonymous"></script>
     <style>
         :root {
             --bg-dark: #0f172a;
@@ -99,6 +101,7 @@
         @media (max-width: 900px) {
             .container {
                 grid-template-columns: 1fr;
+                padding: 1rem;
             }
         }
 
@@ -121,17 +124,27 @@
             border-radius: 12px;
             overflow: hidden;
             background-color: #0b1120;
+            aspect-ratio: 4 / 3;
             display: flex;
             justify-content: center;
             align-items: center;
         }
 
-        .video-feed {
+        #webcam {
+            position: absolute;
             width: 100%;
-            height: auto;
-            max-height: 540px;
-            object-fit: contain;
-            border-radius: 8px;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+
+        #output_canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            z-index: 5;
         }
 
         .sidebar {
@@ -275,15 +288,16 @@
         </div>
         <div class="status-badge">
             <div class="status-dot"></div>
-            <span>Hardware M5 AI Engine Online</span>
+            <span id="status-text">Starting Camera...</span>
         </div>
     </header>
 
     <div class="container">
-        <!-- Live Instant Camera Feed -->
+        <!-- Live Visitor Webcam Panel -->
         <div class="video-panel">
             <div class="video-wrapper">
-                <img src="/video_feed" class="video-feed" alt="RehabVision AI Camera Stream">
+                <video id="webcam" autoplay playsinline muted></video>
+                <canvas id="output_canvas"></canvas>
             </div>
         </div>
 
@@ -312,7 +326,7 @@
 
                 <div class="posture-display">
                     <div class="stat-label">CLINICAL POSTURE ASSESSMENT</div>
-                    <div class="posture-text" id="stat-posture">Stand in front of camera</div>
+                    <div class="posture-text" id="stat-posture">Allow camera permission</div>
                 </div>
             </div>
 
@@ -325,12 +339,12 @@
                     <button class="btn" id="btn-knee" onclick="setMode('KNEE')">
                         🦵 Knee Mode (Extension / Squat)
                     </button>
-                    <button class="btn btn-reset" onclick="resetSession()">
+                    <button class="btn btn-reset" onclick="resetStats()">
                         🔄 Reset Session Stats
                     </button>
-                    <a href="/download_report" class="btn btn-pdf" target="_blank">
+                    <button class="btn btn-pdf" onclick="exportPDF()">
                         📄 Export Clinical PDF Report
-                    </a>
+                    </button>
                 </div>
             </div>
         </div>
@@ -340,42 +354,212 @@
         RehabVision AI — Universal Clinical Rehabilitation Monitor
     </footer>
 
-    <script>
-        function setMode(mode) {
-            fetch(`/api/set_mode/${mode}`)
-                .then(res => res.json())
-                .then(data => {
-                    const btnArm = document.getElementById('btn-arm');
-                    const btnKnee = document.getElementById('btn-knee');
-                    if (mode === 'ARM') {
-                        btnArm.classList.add('btn-active');
-                        btnKnee.classList.remove('btn-active');
-                    } else {
-                        btnKnee.classList.add('btn-active');
-                        btnArm.classList.remove('btn-active');
-                    }
+    <script type="module">
+        import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+        const video = document.getElementById("webcam");
+        const canvas = document.getElementById("output_canvas");
+        const canvasCtx = canvas.getContext("2d");
+        const statusText = document.getElementById("status-text");
+
+        let poseLandmarker = null;
+        let currentMode = "ARM";
+        let reps = 0;
+        let stage = "EXTENDED";
+        let bestROM = 180.0;
+        let currentAngle = 0.0;
+        let posture = "Stand in front of camera";
+        let smoothedAngle = null;
+        let trackedSide = "Detected";
+
+        // Exponential Moving Average (EMA) Denoising Filter
+        function smooth(rawAngle, alpha = 0.35) {
+            if (smoothedAngle === null) {
+                smoothedAngle = rawAngle;
+            } else {
+                smoothedAngle = (alpha * rawAngle) + ((1.0 - alpha) * smoothedAngle);
+            }
+            return Math.round(smoothedAngle * 10) / 10;
+        }
+
+        // Vector Angle Calculation using Math.atan2
+        function calculateAngle(a, b, c) {
+            const radA = Math.atan2(a.y - b.y, a.x - b.x);
+            const radC = Math.atan2(c.y - b.y, c.x - b.x);
+            let angle = Math.abs((radA - radC) * (180.0 / Math.PI));
+            if (angle > 180.0) angle = 360.0 - angle;
+            return Math.round(angle * 10) / 10;
+        }
+
+        function classifyElbow(angle) {
+            if (angle >= 155.0) return "Arm Straight / Full Extension";
+            if (angle >= 75.0) return "Half Flexion (90° Bend)";
+            return "Full Flexion (Bicep Curl)";
+        }
+
+        function classifyKnee(angle) {
+            if (angle >= 165.0) return "Standing Straight / Full Extension";
+            if (angle >= 135.0) return "Quarter Squat (Gentle Rehab)";
+            if (angle >= 90.0) return "Half Squat (Functional Strength)";
+            return "Deep Squat (High Flexion)";
+        }
+
+        function updateExercise(angle) {
+            const flexionThreshold = (currentMode === "ARM") ? 70.0 : 100.0;
+            const extensionThreshold = (currentMode === "ARM") ? 150.0 : 160.0;
+
+            if (angle >= extensionThreshold) {
+                if (stage === "FLEXED") reps += 1;
+                stage = "EXTENDED";
+            } else if (angle <= flexionThreshold) {
+                stage = "FLEXED";
+                if (angle < bestROM) bestROM = angle;
+            }
+        }
+
+        // 1. START VISITOR CAMERA IMMEDIATELY
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 1280, height: 720, facingMode: "user" },
+                    audio: false
                 });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    statusText.innerText = "Camera Active • Initializing AI...";
+                    loadMediaPipe();
+                };
+            } catch (err) {
+                statusText.innerText = "Camera Permission Needed";
+                alert("Please click 'Allow' when your browser asks for camera access!");
+            }
         }
 
-        function resetSession() {
-            fetch('/api/reset')
-                .then(res => res.json())
-                .then(data => console.log('Session reset'));
+        // 2. LOAD MEDIAPIPE IN BACKGROUND
+        async function loadMediaPipe() {
+            try {
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+                );
+                poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numPoses: 1
+                });
+                statusText.innerText = "AI Kinematics Engine Live";
+                predictLoop();
+            } catch (err) {
+                console.error("AI Load Error:", err);
+                statusText.innerText = "AI Ready (Standard Mode)";
+                predictLoop();
+            }
         }
 
-        // Live real-time stats update every 150ms
-        setInterval(() => {
-            fetch('/api/stats')
-                .then(res => res.json())
-                .then(stats => {
-                    document.getElementById('stat-reps').innerText = stats.reps;
-                    document.getElementById('stat-angle').innerText = stats.angle + '°';
-                    document.getElementById('stat-stage').innerText = stats.stage;
-                    document.getElementById('stat-rom').innerText = stats.best_rom + '°';
-                    document.getElementById('stat-posture').innerText = stats.posture;
-                })
-                .catch(err => {});
-        }, 150);
+        let lastVideoTime = -1;
+        // 3. MAIN PREDICTION & DRAWING LOOP
+        function predictLoop() {
+            if (video.currentTime !== lastVideoTime && poseLandmarker) {
+                lastVideoTime = video.currentTime;
+                const startTimeMs = performance.now();
+                const results = poseLandmarker.detectForVideo(video, startTimeMs);
+
+                canvasCtx.save();
+                canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+                if (results.landmarks && results.landmarks.length > 0) {
+                    const landmarks = results.landmarks[0];
+                    const drawingUtils = new DrawingUtils(canvasCtx);
+
+                    drawingUtils.drawLandmarks(landmarks, { radius: 4, color: "#00FF00", lineWidth: 2 });
+                    drawingUtils.drawConnectors(landmarks, PoseLandmarker.POSE_CONNECTIONS, { color: "#06B6D4", lineWidth: 3 });
+
+                    let p1, p2, p3;
+                    const w = canvas.width;
+                    const h = canvas.height;
+
+                    if (currentMode === "ARM") {
+                        const leftScore = (landmarks[11].visibility || 1) + (landmarks[13].visibility || 1) + (landmarks[15].visibility || 1);
+                        const rightScore = (landmarks[12].visibility || 1) + (landmarks[14].visibility || 1) + (landmarks[16].visibility || 1);
+                        const isLeft = leftScore >= rightScore;
+                        trackedSide = isLeft ? "Left Arm" : "Right Arm";
+                        p1 = landmarks[isLeft ? 11 : 12];
+                        p2 = landmarks[isLeft ? 13 : 14];
+                        p3 = landmarks[isLeft ? 15 : 16];
+                    } else {
+                        const leftScore = (landmarks[23].visibility || 1) + (landmarks[25].visibility || 1) + (landmarks[27].visibility || 1);
+                        const rightScore = (landmarks[24].visibility || 1) + (landmarks[26].visibility || 1) + (landmarks[28].visibility || 1);
+                        const isLeft = leftScore >= rightScore;
+                        trackedSide = isLeft ? "Left Leg" : "Right Leg";
+                        p1 = landmarks[isLeft ? 23 : 24];
+                        p2 = landmarks[isLeft ? 25 : 26];
+                        p3 = landmarks[isLeft ? 27 : 28];
+                    }
+
+                    if (p1 && p2 && p3) {
+                        const pt1 = { x: p1.x * w, y: p1.y * h };
+                        const pt2 = { x: p2.x * w, y: p2.y * h };
+                        const pt3 = { x: p3.x * w, y: p3.y * h };
+
+                        const rawAngle = calculateAngle(pt1, pt2, pt3);
+                        currentAngle = smooth(rawAngle);
+                        posture = (currentMode === "ARM") ? classifyElbow(currentAngle) : classifyKnee(currentAngle);
+                        updateExercise(currentAngle);
+
+                        canvasCtx.beginPath();
+                        canvasCtx.moveTo(pt1.x, pt1.y);
+                        canvasCtx.lineTo(pt2.x, pt2.y);
+                        canvasCtx.lineTo(pt3.x, pt3.y);
+                        canvasCtx.strokeStyle = "#FFFF00";
+                        canvasCtx.lineWidth = 6;
+                        canvasCtx.stroke();
+                    }
+
+                    document.getElementById("stat-reps").innerText = reps;
+                    document.getElementById("stat-angle").innerText = currentAngle + "°";
+                    document.getElementById("stat-stage").innerText = stage;
+                    document.getElementById("stat-rom").innerText = bestROM + "°";
+                    document.getElementById("stat-posture").innerText = posture;
+                }
+                canvasCtx.restore();
+            }
+            window.requestAnimationFrame(predictLoop);
+        }
+
+        // Auto-start camera as soon as page opens!
+        startCamera();
+
+        window.setMode = function(mode) {
+            currentMode = mode;
+            smoothedAngle = null;
+            document.getElementById("btn-arm").classList.toggle("btn-active", mode === "ARM");
+            document.getElementById("btn-knee").classList.toggle("btn-active", mode === "KNEE");
+        };
+
+        window.resetStats = function() {
+            reps = 0;
+            stage = "EXTENDED";
+            bestROM = 180.0;
+            document.getElementById("stat-reps").innerText = reps;
+            document.getElementById("stat-rom").innerText = bestROM + "°";
+        };
+
+        window.exportPDF = function() {
+            const params = new URLSearchParams({
+                reps: reps,
+                angle: currentAngle,
+                best_rom: bestROM,
+                mode: currentMode,
+                posture: posture,
+                side: trackedSide
+            });
+            window.location.href = `/download_report?${params.toString()}`;
+        };
     </script>
 </body>
 </html>
