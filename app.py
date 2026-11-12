@@ -1,6 +1,6 @@
 """
 RehabVision AI - Universal Web Server & Biomechanics Monitor
-Cloud-Ready for Render deployment with dynamic PORT and local/cloud fallback.
+Cloud-Ready for Render with Graceful Headless Fallback.
 """
 
 import io
@@ -20,44 +20,52 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-from src.pose_detector import PoseDetector
-from src.biomechanics import (
-    calculate_joint_angle,
-    classify_knee_posture,
-    classify_elbow_posture,
-    AngleSmoother,
-    ExerciseTracker
-)
-
 app = Flask(__name__)
 
-# Initialize AI & Biomechanics Engine
-detector = PoseDetector()
-smoother = AngleSmoother(alpha=0.35)
-tracker = ExerciseTracker(mode="ARM")
+# Graceful AI Engine Loader (Works on Mac local AND Linux Headless Cloud)
+detector = None
+try:
+    from src.pose_detector import PoseDetector
+    from src.biomechanics import (
+        calculate_joint_angle,
+        classify_knee_posture,
+        classify_elbow_posture,
+        AngleSmoother,
+        ExerciseTracker
+    )
+    detector = PoseDetector()
+    smoother = AngleSmoother(alpha=0.35)
+    tracker = ExerciseTracker(mode="ARM")
+    print("[INFO] AI Biomechanics Engine Loaded Successfully.")
+except Exception as e:
+    print(f"[NOTICE] Running in Headless Cloud Mode (Render): {e}")
+    smoother = None
+    tracker = None
+
 current_mode = "ARM"
 
-# Shared real-time telemetry state
 telemetry = {
     "reps": 0,
     "angle": 0.0,
     "stage": "EXTENDED",
     "best_rom": 180.0,
-    "posture": "System Active",
+    "posture": "Cloud Demo Active",
     "mode": "ARM",
-    "side": "Detecting..."
+    "side": "Active"
 }
 
 def get_camera():
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(1)
-    return cap
+    try:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(1)
+        return cap if cap.isOpened() else None
+    except Exception:
+        return None
 
 camera = get_camera()
 
 def cleanup(*args):
-    print("\n[INFO] Shutting down RehabVision AI...")
     if camera and camera.isOpened():
         camera.release()
     cv2.destroyAllWindows()
@@ -71,93 +79,90 @@ def generate_frames():
     global current_mode, telemetry
 
     while True:
-        # Check if running on a machine with a physical camera
-        if camera and camera.isOpened():
+        # 1. Local Machine with Camera
+        if camera and camera.isOpened() and detector:
             success, frame = camera.read()
             if not success:
                 continue
+
+            h, w, _ = frame.shape
+            landmarks = detector.process_frame(frame)
+
+            if landmarks:
+                for (p1_id, p2_id) in detector.connections:
+                    pt1 = landmarks[p1_id]
+                    pt2 = landmarks[p2_id]
+                    if pt1.visibility > 0.4 and pt2.visibility > 0.4:
+                        c1 = (int(pt1.x * w), int(pt1.y * h))
+                        c2 = (int(pt2.x * w), int(pt2.y * h))
+                        cv2.line(frame, c1, c2, (255, 200, 100), 2)
+
+                for lm in landmarks:
+                    if lm.visibility > 0.4:
+                        cx, cy = int(lm.x * w), int(lm.y * h)
+                        cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
+
+                if current_mode == "ARM":
+                    joint_data = detector.get_best_arm_landmarks(landmarks, w, h)
+                    if joint_data:
+                        p1, p2, p3 = joint_data["shoulder"], joint_data["elbow"], joint_data["wrist"]
+                        side = joint_data["side"]
+                        cv2.line(frame, p1, p2, (0, 255, 255), 4)
+                        cv2.line(frame, p2, p3, (0, 255, 255), 4)
+                        cv2.circle(frame, p1, 8, (0, 0, 255), -1)
+                        cv2.circle(frame, p2, 8, (0, 255, 0), -1)
+                        cv2.circle(frame, p3, 8, (255, 0, 0), -1)
+
+                        raw_angle = calculate_joint_angle(p1, p2, p3)
+                        smooth_angle = smoother.update(raw_angle)
+                        posture = classify_elbow_posture(smooth_angle)
+                        reps, stage, best_rom = tracker.update(smooth_angle)
+
+                        telemetry = {
+                            "reps": reps,
+                            "angle": smooth_angle,
+                            "stage": stage,
+                            "best_rom": best_rom,
+                            "posture": posture,
+                            "mode": "ARM",
+                            "side": side
+                        }
+                else:
+                    joint_data = detector.get_best_knee_landmarks(landmarks, w, h)
+                    if joint_data:
+                        p1, p2, p3 = joint_data["hip"], joint_data["knee"], joint_data["ankle"]
+                        side = joint_data["side"]
+                        cv2.line(frame, p1, p2, (0, 255, 255), 4)
+                        cv2.line(frame, p2, p3, (0, 255, 255), 4)
+                        cv2.circle(frame, p1, 8, (0, 0, 255), -1)
+                        cv2.circle(frame, p2, 8, (0, 255, 0), -1)
+                        cv2.circle(frame, p3, 8, (255, 0, 0), -1)
+
+                        raw_angle = calculate_joint_angle(p1, p2, p3)
+                        smooth_angle = smoother.update(raw_angle)
+                        posture = classify_knee_posture(smooth_angle)
+                        reps, stage, best_rom = tracker.update(smooth_angle)
+
+                        telemetry = {
+                            "reps": reps,
+                            "angle": smooth_angle,
+                            "stage": stage,
+                            "best_rom": best_rom,
+                            "posture": posture,
+                            "mode": "KNEE",
+                            "side": side
+                        }
         else:
-            # Cloud Fallback Frame (when running on a cloud server without a webcam)
+            # 2. Cloud Server Demo Canvas (Render Data Center)
             frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(frame, "REHABVISION AI CLOUD DEMO", (50, 200),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 200, 255), 2)
-            cv2.putText(frame, "Server Online (Cloud Mode)", (120, 250),
+            cv2.putText(frame, "REHABVISION AI", (180, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 255), 2)
+            cv2.putText(frame, "Cloud Server Live - 24/7 Deployment", (90, 230),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(frame, "Connect local client for live tracking", (80, 300),
+            cv2.putText(frame, "Biomedical Kinematics Engine Ready", (110, 280),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-
-        h, w, _ = frame.shape
-        landmarks = detector.process_frame(frame)
-
-        if landmarks:
-            # 1. Draw Skeleton Lines
-            for (p1_id, p2_id) in detector.connections:
-                pt1 = landmarks[p1_id]
-                pt2 = landmarks[p2_id]
-                if pt1.visibility > 0.4 and pt2.visibility > 0.4:
-                    c1 = (int(pt1.x * w), int(pt1.y * h))
-                    c2 = (int(pt2.x * w), int(pt2.y * h))
-                    cv2.line(frame, c1, c2, (255, 200, 100), 2)
-
-            # 2. Draw Landmark Dots
-            for lm in landmarks:
-                if lm.visibility > 0.4:
-                    cx, cy = int(lm.x * w), int(lm.y * h)
-                    cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
-
-            # 3. Active Joint Kinematics
-            if current_mode == "ARM":
-                joint_data = detector.get_best_arm_landmarks(landmarks, w, h)
-                if joint_data:
-                    p1, p2, p3 = joint_data["shoulder"], joint_data["elbow"], joint_data["wrist"]
-                    side = joint_data["side"]
-
-                    cv2.line(frame, p1, p2, (0, 255, 255), 4)
-                    cv2.line(frame, p2, p3, (0, 255, 255), 4)
-                    cv2.circle(frame, p1, 8, (0, 0, 255), -1)
-                    cv2.circle(frame, p2, 8, (0, 255, 0), -1)
-                    cv2.circle(frame, p3, 8, (255, 0, 0), -1)
-
-                    raw_angle = calculate_joint_angle(p1, p2, p3)
-                    smooth_angle = smoother.update(raw_angle)
-                    posture = classify_elbow_posture(smooth_angle)
-                    reps, stage, best_rom = tracker.update(smooth_angle)
-
-                    telemetry = {
-                        "reps": reps,
-                        "angle": smooth_angle,
-                        "stage": stage,
-                        "best_rom": best_rom,
-                        "posture": posture,
-                        "mode": "ARM",
-                        "side": side
-                    }
-            else:
-                joint_data = detector.get_best_knee_landmarks(landmarks, w, h)
-                if joint_data:
-                    p1, p2, p3 = joint_data["hip"], joint_data["knee"], joint_data["ankle"]
-                    side = joint_data["side"]
-
-                    cv2.line(frame, p1, p2, (0, 255, 255), 4)
-                    cv2.line(frame, p2, p3, (0, 255, 255), 4)
-                    cv2.circle(frame, p1, 8, (0, 0, 255), -1)
-                    cv2.circle(frame, p2, 8, (0, 255, 0), -1)
-                    cv2.circle(frame, p3, 8, (255, 0, 0), -1)
-
-                    raw_angle = calculate_joint_angle(p1, p2, p3)
-                    smooth_angle = smoother.update(raw_angle)
-                    posture = classify_knee_posture(smooth_angle)
-                    reps, stage, best_rom = tracker.update(smooth_angle)
-
-                    telemetry = {
-                        "reps": reps,
-                        "angle": smooth_angle,
-                        "stage": stage,
-                        "best_rom": best_rom,
-                        "posture": posture,
-                        "mode": "KNEE",
-                        "side": side
-                    }
+            cv2.putText(frame, "Click Export PDF below for Clinical Report", (80, 340),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 180, 255), 1)
 
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret:
@@ -184,15 +189,17 @@ def set_mode(mode):
     global current_mode
     if mode in ["ARM", "KNEE"]:
         current_mode = mode
-        smoother.smoothed_angle = None
-        tracker.set_mode(mode)
+        if smoother and tracker:
+            smoother.smoothed_angle = None
+            tracker.set_mode(mode)
     return jsonify({"status": "success", "mode": current_mode})
 
 @app.route('/api/reset')
 def reset_session():
-    tracker.counter = 0
-    tracker.best_flexion = 180.0
-    tracker.stage = "EXTENDED"
+    if tracker:
+        tracker.counter = 0
+        tracker.best_flexion = 180.0
+        tracker.stage = "EXTENDED"
     return jsonify({"status": "reset"})
 
 @app.route('/download_report')
@@ -293,19 +300,6 @@ def download_report():
         mimetype='application/pdf'
     )
 
-def auto_open_browser():
-    webbrowser.open_new("http://127.0.0.1:5001")
-
 if __name__ == '__main__':
-    # Read dynamic port from Render ($PORT) or default to 5001
     port = int(os.environ.get("PORT", 5001))
-
-    print(f"==================================================")
-    print(f"  RehabVision AI Server Live at Port: {port}     ")
-    print(f"==================================================")
-
-    # Only auto-open if running locally on your laptop
-    if "PORT" not in os.environ:
-        threading.Timer(1.0, auto_open_browser).start()
-
     app.run(host='0.0.0.0', port=port, debug=False)
